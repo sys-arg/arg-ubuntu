@@ -1,0 +1,96 @@
+name: PR Validation
+
+on:
+  pull_request:
+    branches: [dev]
+    types: [opened, edited, synchronize, reopened]
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: read
+
+jobs:
+  validate:
+    name: ${{ github.event_name == 'issues' && 'Validate Issue' || 'Validate PR' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch PR commit history
+        if: github.event_name == 'pull_request'
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check Git conventions
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const types = 'feat|fix|refactor|docs|style|test|chore|ci|build|perf';
+            const branchTypes = types.replace('feat', 'feature');
+            const issueNumber = '[1-9][0-9]*';
+            const description = '\\S(?:[^\\r\\n]*\\S)?';
+            const issueTitle = new RegExp(`^\\[(?:${types.toUpperCase() + '|TASK'})\\] ${description}$`, 'u');
+            const branchName = new RegExp(`^(?:${branchTypes})/(${issueNumber})-[a-z0-9]+(?:-[a-z0-9]+)*$`, 'u');
+            const commitSubject = new RegExp(`^(?:${types}): ${description}$`, 'u');
+            const prTitle = new RegExp(`^(?:${types}): ${description} \\(#(${issueNumber})\\)$`, 'u');
+            const issueLink = new RegExp(`^Related to #(${issueNumber})$`, 'u');
+
+            if (context.eventName === 'issues') {
+              if (!issueTitle.test(context.payload.issue.title)) {
+                core.setFailed('이슈 제목은 [TYPE] 설명 형식으로 작성하세요. 예시 [FEAT] 로그인 구현');
+              }
+              return;
+            }
+
+            const pr = context.payload.pull_request;
+            const branch = branchName.exec(pr.head.ref);
+            const title = prTitle.exec(pr.title);
+            const links = (pr.body ?? '').split(/\r?\n/)
+              .map(line => issueLink.exec(line))
+              .filter(Boolean);
+            const link = links.length === 1 ? links[0] : null;
+
+            if (!branch) {
+              core.setFailed('브랜치 이름은 type/이슈번호-설명 형식으로 작성하세요. 예시 feature/12-login');
+            }
+            if (!title) {
+              core.setFailed('PR 제목은 type: 설명 (#이슈번호) 형식으로 작성하세요.');
+            }
+            if (!link || !Number.isSafeInteger(Number(link[1]))) {
+              core.setFailed('PR 본문에 Related to #이슈번호 형식의 줄을 하나 작성하세요.');
+            } else if (branch && title) {
+              if (branch[1] !== link[1] || title[1] !== link[1]) {
+                core.setFailed('브랜치 이름, PR 제목과 본문에 같은 이슈 번호를 사용하세요.');
+              } else {
+                let issue;
+                try {
+                  ({ data: issue } = await github.rest.issues.get({
+                    ...context.repo,
+                    issue_number: Number(link[1]),
+                  }));
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+
+                if (!issue || issue.pull_request) {
+                  core.setFailed(`현재 저장소에서 이슈 #${link[1]}을 찾을 수 없습니다.`);
+                } else if (!issueTitle.test(issue.title)) {
+                  core.setFailed(`이슈 #${link[1]} 제목은 [TYPE] 설명 형식이어야 합니다.`);
+                }
+              }
+            }
+
+            const { execFileSync } = require('node:child_process');
+            const subjects = execFileSync(
+              'git',
+              ['log', '--format=%H%x09%s', `${pr.base.sha}..${pr.head.sha}`, '--'],
+              { encoding: 'utf8' },
+            );
+            for (const line of subjects.split('\n').filter(Boolean)) {
+              const separator = line.indexOf('\t');
+              if (!commitSubject.test(line.slice(separator + 1))) {
+                core.setFailed(`커밋 ${line.slice(0, 12)} 제목은 type: 설명 형식이어야 합니다.`);
+              }
+            }
