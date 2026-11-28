@@ -1,0 +1,89 @@
+name: Issue Ready Notification
+
+on:
+  issues:
+    types: [closed]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-ready-notification
+  queue: max
+
+jobs:
+  notify:
+    name: Notify assigned developers
+    if: github.event.issue.state_reason == 'completed'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Notify assignees of unblocked issues
+        uses: actions/github-script@v8
+        with:
+          script: |
+            function requiredIssues(body) {
+              const lines = (body ?? '').split(/\r?\n/);
+              const start = lines.findIndex(line => line.trim() === '### 필수 선행 이슈');
+              if (start === -1) return [];
+
+              const numbers = [];
+              for (const rawLine of lines.slice(start + 1)) {
+                const line = rawLine.trim();
+                if (/^#{1,6}\s/u.test(line)) break;
+                if (!line.includes('#') && !/^[-*+]\s/u.test(line)) continue;
+
+                const entry = /^-\s+#([1-9]\d*)(?=\s|$)[^#]*$/u.exec(line);
+                if (!entry) return [];
+                const number = Number(entry[1]);
+                if (!Number.isSafeInteger(number)) return [];
+                numbers.push(number);
+              }
+              return numbers;
+            }
+
+            function isCompleted(issue) {
+              return issue?.state === 'closed' && issue.state_reason === 'completed';
+            }
+
+            const { number: completedNumber } = context.payload.issue;
+            const issues = await github.paginate(github.rest.issues.listForRepo, {
+              ...context.repo,
+              state: 'all',
+              per_page: 100,
+            });
+            const issuesByNumber = new Map(
+              issues.filter(issue => !issue.pull_request).map(issue => [issue.number, issue]),
+            );
+            if (!isCompleted(issuesByNumber.get(completedNumber))) return;
+
+            const marker = '<!-- issue-ready-notification -->';
+            for (const issue of issuesByNumber.values()) {
+              if (issue.state !== 'open' || !issue.assignees?.length) continue;
+
+              const prerequisites = requiredIssues(issue.body);
+              if (!prerequisites.includes(completedNumber)) continue;
+              if (!prerequisites.every(number => isCompleted(issuesByNumber.get(number)))) continue;
+
+              const target = { ...context.repo, issue_number: issue.number };
+              try {
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  ...target,
+                  per_page: 100,
+                });
+                const alreadyNotified = comments.some(comment =>
+                  comment.user?.login === 'github-actions[bot]' &&
+                  comment.body?.startsWith(marker + '\n'),
+                );
+                if (alreadyNotified) continue;
+
+                const mentions = issue.assignees.map(assignee => '@' + assignee.login).join(' ');
+                const references = prerequisites.map(number => '#' + number).join(', ');
+                await github.rest.issues.createComment({
+                  ...target,
+                  body: marker + '\n' + mentions +
+                    ' 필수 선행 이슈(' + references + ')가 모두 완료되었습니다. 이 Issue에 착수할 수 있습니다.',
+                });
+              } catch (error) {
+                core.setFailed('#' + issue.number + ' 알림 등록 실패: ' + error.message);
+              }
+            }
