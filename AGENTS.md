@@ -24,7 +24,7 @@
 | 프로세스·자원 제어 | POSIX/Linux API(`fork`, `exec*`, `waitpid`, `setsid`, `pipe`, `dup2`, `poll` 등), systemd User Manager, 사용자 D-Bus용 `libsystemd`의 `sd-bus`, Linux cgroup v2. 실행 scope 생성에 `systemd-run --user`를 사용한다. |
 | 터미널 UI | `ncursesw`로 TUI를 만들고 Agent의 독립 터미널에는 `xterm`을 사용한다. `ncursesw` 접근과 화면 갱신은 메인 스레드에서 수행한다. |
 | 설치 | HTTPS 전송은 `libcurl`, 아카이브는 `libarchive`, SHA-256 검증은 OpenSSL EVP, 배포 메타데이터 파싱은 `json-c`를 사용한다. 시스템 패키지에는 필요 시 `apt-get`, `dpkg-deb`를 사용한다. |
-| 테스트 | C 단위 테스트, Python 3 PTY 테스트, Ubuntu 통합 테스트를 사용한다. Python과 셸은 테스트 및 개발 보조에 사용하고 핵심 제품 동작은 C로 구현한다. |
+| 테스트 | `dev`에서 C 단위 테스트, Python 3 PTY 테스트와 Ubuntu 통합 테스트를 사용한다. 테스트 소스, 데이터, 보조 코드와 빌드 정의는 `tests/`에 둔다. |
 
 - `pkg-config` 모듈은 `libsystemd ncursesw libarchive libcurl openssl json-c`를 사용한다. 새 라이브러리가 필요하면 기존 코드와 기본 라이브러리로 해결할 수 있는지 확인하고, 추가 이유와 빌드 영향을 Issue 또는 PR에 기록한다.
 
@@ -32,6 +32,7 @@
 
 - 브랜치, 커밋, PR, 리뷰 규칙은 [CONTRIBUTING.md](CONTRIBUTING.md)를 따른다. 작업 전 현재 브랜치와 작업 트리 상태를 확인하고, 기존 작업자의 변경을 보존한다.
 - `docs/` 아래 Markdown을 작성하거나 수정하기 전에 저장소 루트의 [DOCS.md](DOCS.md)를 읽고 문서 범위, 파일명, 서식과 변경 기록 규칙을 따른다. PR 변경 기록에도 이 규약을 적용한다.
+- 제품 빌드는 루트 `Makefile`에, 개발 테스트는 `tests/Makefile`에 둔다. 개발 전용 테스트 CI는 `.github/workflows/dev-tests.yml`을 사용한다. 제출용 `main`과 Release에는 제품 파일과 공통 문서·메타데이터·CI를 포함한다. 릴리즈 PR은 `release/vX.Y.Z`에서 `main`으로 보낸다.
 - 담당 모듈의 소스, 헤더, 테스트를 함께 수정한다. `main.c`, `Makefile`, 공용 타입과 인터페이스에 변경이 필요하면 영향받는 이슈와 먼저 범위를 합의한다. 여러 작업에 영향을 주는 계약 변경은 작은 선행 PR로 분리한다.
 - 서로 다른 이슈의 변경은 독립적으로 검토할 수 있게 유지한다. 새 의존성이나 호환성에 영향을 주는 변경은 이유와 영향 범위를 Issue 또는 PR에 기록한다.
 - 공용 인터페이스를 정의할 때 입력·반환 타입, 오류값, 상태 변경 책임을 합의한다. TUI는 백엔드가 제공하는 상태를 읽고, Monitor는 관리 대상 scope 스냅샷을 사용한다. 직접 자식의 종료 상태를 회수하는 책임은 PID별로 한 곳에 둔다.
@@ -48,7 +49,7 @@
 
 ## 검증과 인수 조건
 
-- 빌드 전에 실제 실행 환경과 의존성을 확인한다. Ubuntu에서는 `pkg-config --exists libsystemd ncursesw libarchive libcurl openssl json-c`로 라이브러리를 점검한다. 구현된 빌드 대상에 맞춰 `make`와 `make test`를 실행하고, 깨끗한 빌드 검증 시 독립 작업 디렉터리에서 `make clean && make && make test`를 실행한다.
+- 빌드 전에 실제 실행 환경과 의존성을 확인한다. Ubuntu에서는 `pkg-config --exists libsystemd ncursesw libarchive libcurl openssl json-c`로 라이브러리를 점검한다. `dev`의 깨끗한 작업 디렉터리에서 `make clean && make && make -f tests/Makefile test`를 실행한다. 릴리즈 후보는 `make clean && make`와 `./arg --help`를 확인하고, Ubuntu 일반 사용자 세션에서 `./arg`를 실행해 초기 화면을 검증한다.
 - C·PTY 테스트와 실제 systemd·cgroup v2·GUI 테스트를 구분한다. Ubuntu User Manager나 WSLg에 접근할 수 없는 세션은 가능한 검증을 진행하고, 실행하지 못한 실측과 필요한 환경을 PR에 기록한다.
 - 커널·systemd 상태는 명령의 성공 코드와 실제 상태를 함께 확인한다. App 실행 검증에서는 GUI 창 표시, 메인 PID의 cgroup 소속, scope 자원 집계를 각각 기록한다. `systemctl --user show`에서 확인한 `ControlGroup`을 `/proc/<pid>/cgroup` 및 필요한 cgroup 상태와 대조한다.
 - 제출 전에 `git diff --check`와 변경 파일 목록을 확인한다. PR에 Issue, 변경 범위, 검증 환경, 실제 실행한 명령과 결과, 미검증 항목과 이유를 기록한다.

@@ -1,0 +1,73 @@
+name: Release Validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate submission
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out the merge candidate
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Check release branch and tracked paths
+        shell: bash
+        run: |
+          failed=0
+          if [[ ! "$GITHUB_HEAD_REF" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            printf '릴리즈 PR 브랜치는 release/vX.Y.Z 형식이어야 합니다.\n'
+            failed=1
+          fi
+
+          dev_paths=$(git ls-tree --full-tree --name-only HEAD -- tests .github/workflows/dev-tests.yml)
+          if [[ -n "$dev_paths" ]]; then
+            printf '제출 대상에서 개발 테스트 경로를 제거하세요.\n%s\n' "$dev_paths"
+            failed=1
+          fi
+          exit "$failed"
+
+      - name: Detect product files
+        id: product
+        shell: bash
+        run: |
+          base_paths=$(git ls-tree --full-tree --name-only HEAD^1 -- Makefile src include)
+          candidate_paths=$(git ls-tree --full-tree --name-only HEAD -- Makefile src include)
+          if [[ -z "$base_paths" && -z "$candidate_paths" ]]; then
+            printf 'build=false\n' >> "$GITHUB_OUTPUT"
+            printf '제품 파일이 아직 없는 트리이므로 제품 빌드를 생략합니다.\n'
+          else
+            if [[ ! -f Makefile ]]; then
+              printf '제품 빌드에 필요한 루트 Makefile이 없습니다.\n'
+              exit 1
+            fi
+            printf 'build=true\n' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install Ubuntu build dependencies
+        if: steps.product.outputs.build == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            gcc make pkg-config libsystemd-dev libncurses-dev \
+            libarchive-dev libcurl4-openssl-dev libssl-dev libjson-c-dev
+
+      - name: Build and run ARG
+        if: steps.product.outputs.build == 'true'
+        shell: bash
+        run: |
+          make clean
+          make
+          test -x ./arg
+          usage=$(timeout --kill-after=2s 10s ./arg --help)
+          test -n "$usage"
+          printf '%s\n' "$usage"
