@@ -1,0 +1,69 @@
+name: Main C-only
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  c-only:
+    name: C-only submission
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the proposed merge
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Check tracked submission files
+        shell: bash
+        run: |
+          set -euo pipefail
+          tracked_files=$(mktemp)
+          trap 'rm -f -- "$tracked_files"' EXIT
+          git ls-tree -r -z HEAD > "$tracked_files"
+
+          violations=0
+          while IFS= read -r -d '' entry; do
+            read -r mode _ object <<< "${entry%%$'\t'*}"
+            path=${entry#*$'\t'}
+
+            if [[ "$mode" != 100644 && "$mode" != 100755 ]]; then
+              printf 'Unsupported Git entry (%s): %q\n' "$mode" "$path"
+              violations=1
+              continue
+            fi
+
+            case "$path" in
+              Makefile|*/Makefile|GNUmakefile|*/GNUmakefile|makefile|*/makefile|*.mk)
+                if ! git cat-file blob "$object" | awk '
+                  /^[[:space:]]*#/ { next }
+                  {
+                    line = tolower($0)
+                    sub(/[[:space:]]+#.*/, "", line)
+                    if (line ~ /(^|[^[:alnum:]_])(python([0-9]+(\.[0-9]+)*)?|pypy[0-9]*|pytest|pip([0-9]+(\.[0-9]+)*)?)([^[:alnum:]_]|$)/ ||
+                        line ~ /\.py(w|i|c|o)?([^[:alnum:]_]|$)/) {
+                      print "  Python reference at line " NR
+                      violation = 1
+                    }
+                  }
+                  END { exit violation }
+                '; then
+                  printf 'Makefile check failed: %q\n' "$path"
+                  violations=1
+                fi
+                ;;
+              *.c|*.h|*.md|LICENSE|.gitignore|.gitattributes|.editorconfig|\
+              .github/workflows/*.yml|.github/workflows/*.yaml|\
+              .github/ISSUE_TEMPLATE/*.yml|.github/ISSUE_TEMPLATE/*.yaml)
+                ;;
+              *)
+                printf 'File type not allowed on main: %q\n' "$path"
+                violations=1
+                ;;
+            esac
+          done < "$tracked_files"
+
+          exit "$violations"
